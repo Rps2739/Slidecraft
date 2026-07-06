@@ -1,0 +1,19 @@
+node_modules/
+.work/
+.tmp/
+output/
+.ui-input/
+.tw-input/
+.claude/
+assets/
+logs/
+*.pptx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.lnk
+
+# Exclude references and local slides references
+references/
+HTML references/

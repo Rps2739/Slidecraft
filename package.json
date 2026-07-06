@@ -1,0 +1,28 @@
+{
+  "name": "slidecraft",
+  "version": "1.0.0",
+  "description": "Convert HTML, PDF, PPTX and images into native, fully editable PowerPoint decks — offline, local-first.",
+  "main": "build.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "build": "node build.js",
+    "assets": "node scripts/vendor_assets.js"
+  },
+  "keywords": ["pptx", "powerpoint", "html", "converter", "slides", "pdf", "offline"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/montserrat": "^5.2.8",
+    "@fontsource/roboto": "^5.2.10",
+    "@fortawesome/fontawesome-free": "^7.3.0",
+    "chart.js": "^4.5.1",
+    "echarts": "^6.1.0",
+    "express": "^5.2.1",
+    "node-html-parser": "^8.0.4",
+    "pptxgenjs": "^4.0.1",
+    "puppeteer": "^25.3.0",
+    "tailwindcss": "^3.4.19",
+    "tesseract.js": "^7.0.0"
+  }
+}

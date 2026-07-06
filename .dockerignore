@@ -1,0 +1,17 @@
+node_modules
+.work
+.tmp
+output
+.ui-input
+.tw-input
+logs
+.claude
+.git
+references
+HTML references
+*.pptx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+Slidecraft.lnk
