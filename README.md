@@ -42,8 +42,11 @@ npm start          # opens the local UI at http://127.0.0.1:4599
 
 **Or just double-click the "Slidecraft" icon on your Desktop** — no terminal needed. It starts the
 server in the background (no visible console window) and opens your browser to it. If it's already
-running, clicking it again just opens a new browser tab instead of erroring. To recreate the shortcut
-(e.g. after moving the project folder), see `scripts/Slidecraft.vbs` and `scripts/launch.js`.
+running it just opens a new tab — **unless the code has changed since that server started, in which
+case the shortcut automatically restarts it so you always get the latest version.** (A running Node
+server holds its code in memory and never re-reads the files, so without this an old background
+process would keep serving stale code no matter how many times you edited or relaunched.) To recreate
+the shortcut (e.g. after moving the project folder), see `scripts/Slidecraft.vbs` and `scripts/launch.js`.
 
 Drop `.html`, `.txt`, `.pdf`, or image files — **or paste HTML straight into the box**. Multiple slides
 are **auto-detected** (by `<!DOCTYPE html>`, `<html>`, or `<div class="slide-container">` boundaries),
@@ -157,11 +160,15 @@ web UI also runs on a free cloud host using the included `Dockerfile`:
    no configuration needed (it injects `PORT`, and the image sets `HOST=0.0.0.0`).
 4. Deploy. Your converter is live at `https://<name>.onrender.com`.
 
-What changes in the cloud (Linux, no PowerPoint):
+What changes in the cloud (Linux, no PowerPoint) — **the UI detects this automatically**
+(via `/api/capabilities`): it shows a "☁ cloud mode" badge, drops PPTX from the file
+picker, hides the PDF button, and locks quick mode on. So the hosted app never offers a
+feature it can't deliver.
 
 - Conversions run in **quick mode** automatically (Layer-1 validation still runs; the
   PowerPoint pixel-diff verification is skipped).
-- **PPTX input** and **PDF download** are unavailable (both drive PowerPoint via COM).
+- **PPTX input** and **PDF download** are unavailable (both drive PowerPoint via COM) — the
+  server returns a clean "unavailable on this host" message rather than erroring.
 - HTML / PDF / image → editable PPTX all work: Chromium, Python (PyMuPDF/OpenCV), and OCR are
   baked into the image, and all assets are vendored at build time.
 - Free tiers sleep after idle and give ~512 MB RAM — fine for casual decks; very dense

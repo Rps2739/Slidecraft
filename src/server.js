@@ -10,12 +10,18 @@ const fs = require("fs");
 const os = require("os");
 const { convert } = require("../build");
 const { makeLogger, newJobId, LOG_DIR } = require("./logger");
+const { sourceSignature } = require("./version");
 
 const log = makeLogger("server");
 const ROOT = path.resolve(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "output");
 const IN_DIR = path.join(ROOT, ".ui-input");
 fs.mkdirSync(OUT_DIR, { recursive: true });
+
+// Signature of the code THIS process loaded at startup. The launcher compares it to
+// the code on disk and restarts the server when they differ (see scripts/launch.js),
+// so an edit always reaches the user instead of a days-old process serving stale code.
+const BUILD_SIG = sourceSignature();
 
 // Catch anything that slips past the request handlers' own try/catch — log it instead
 // of letting the process crash (or die silently) with no trace. The server keeps running:
@@ -97,6 +103,32 @@ function startServer(port = parseInt(process.env.PORT, 10) || 4599) {
     }
   });
 
+  // Build signature — the launcher polls this to detect a stale (old-code) server.
+  app.get("/api/version", (_req, res) => res.json({ sig: BUILD_SIG }));
+
+  // What this deployment can do. PowerPoint-backed features (visual verification, PPTX
+  // input, PDF export) need Windows + Office, so a Linux/cloud host advertises them off
+  // and the UI adapts (hides the PDF button, shows a "cloud mode" note, etc.).
+  const WIN = os.platform() === "win32";
+  app.get("/api/capabilities", (_req, res) => res.json({
+    platform: os.platform(),
+    powerpoint: WIN,
+    features: { verify: WIN, pptxInput: WIN, pdfExport: WIN },
+  }));
+
+  // Graceful shutdown so the launcher can restart a stale server with fresh code.
+  // Loopback-only: refuse remote callers even if the server is bound to 0.0.0.0.
+  app.post("/api/shutdown", (req, res) => {
+    const ip = req.socket.remoteAddress || "";
+    if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(ip)) {
+      return res.status(403).json({ error: "shutdown allowed from localhost only" });
+    }
+    log.info("shutdown requested by launcher (restart for fresh code)");
+    res.json({ ok: true });
+    // let the response flush, then exit so the port frees for the new process
+    setTimeout(() => process.exit(0), 150);
+  });
+
   app.get("/download/:file", (req, res) => {
     const p = path.join(OUT_DIR, path.basename(req.params.file));
     if (!fs.existsSync(p)) return res.status(404).end();
@@ -117,6 +149,7 @@ function startServer(port = parseInt(process.env.PORT, 10) || 4599) {
 
   // convert the generated pptx to PDF on demand (via PowerPoint) and send it
   app.get("/download-pdf/:file", (req, res) => {
+    if (!WIN) return res.status(501).json({ error: "PDF export needs PowerPoint (Windows only); unavailable on this host." });
     const pptx = path.join(OUT_DIR, path.basename(req.params.file));
     if (!fs.existsSync(pptx)) return res.status(404).end();
     const pdf = pptx.replace(/\.pptx$/i, ".pdf");
@@ -140,7 +173,7 @@ function startServer(port = parseInt(process.env.PORT, 10) || 4599) {
     const server = app.listen(port, host, () => {
       const url = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
       console.log(`\n  HTML->PPTX converter UI running at:  ${url}\n  Press Ctrl+C to stop.\n`);
-      log.info(`server started on ${host}:${port} (cwd ${process.cwd()})`);
+      log.info(`server started on ${host}:${port} (cwd ${process.cwd()}, build ${BUILD_SIG})`);
       // health check: log whether the external tools conversions depend on are reachable
       // from THIS process's environment. Launched-from-shortcut runs have a different PATH
       // than a terminal, so this is where a "conversion does nothing" cause shows up.

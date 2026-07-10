@@ -2,8 +2,26 @@
 
 const $ = (id) => document.getElementById(id);
 let items = []; // { name, content, badge }
+let caps = { powerpoint: true, features: { verify: true, pptxInput: true, pdfExport: true } };
 
 const isMedia = (n) => /\.(pdf|pptx?|png|jpe?g|webp|bmp|tiff?)$/i.test(n);
+
+// Detect what this deployment supports (a cloud/Linux host has no PowerPoint) and adapt
+// the UI: show a "cloud mode" note, drop PPTX from accepted inputs, hide the PDF button.
+fetch("/api/capabilities").then((r) => r.json()).then((c) => {
+  caps = c;
+  if (!c.powerpoint) {
+    $("cloudnote").classList.add("on");
+    // PPTX input needs PowerPoint — remove it from the file picker + hints
+    const fi = $("file");
+    if (fi) fi.setAttribute("accept", ".html,.htm,.txt,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff");
+    const fmt = document.querySelector("#drop .fmt");
+    if (fmt) fmt.textContent = "html · txt · pdf · png · jpg";
+    // Quick mode is the only mode without PowerPoint verification — lock it on
+    const fast = $("fast");
+    if (fast) { fast.checked = true; fast.disabled = true; }
+  }
+}).catch(() => {});
 
 // Detect slide boundaries the same way the server does (doctype -> <html> -> slide-container).
 function splitSlides(t) {
@@ -133,54 +151,95 @@ dropTargets.forEach((el) => {
   el.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
 });
 
-/* ---------- paste ---------- */
+/* ---------- paste / HTML editor ----------
+   The editor KEEPS what you paste visible so you can read and edit it. Two synced views:
+   the rail textarea (#paste) and a big modal editor (#pasteBig). "Add to tray" moves the
+   editor content in as slides. */
 const pasteEl = $("paste");
-function refreshPasteCount() {
-  const n = pasteEl.value.trim() ? splitSlides(pasteEl.value).length : 0;
-  $("pasteCount").textContent = n ? `${n} slide${n > 1 ? "s" : ""} detected` : "";
-  $("addPaste").disabled = n === 0;
-}
-pasteEl.addEventListener("input", refreshPasteCount);
-
-// add clipboard HTML straight to the tray (shared by the paste pane + global Ctrl+V)
+const pasteBig = $("pasteBig");
+const looksLikeSlideHtml = (t) => !!t && /<!DOCTYPE html>|<html[\s>]|slide-container|<body[\s>]|<div[\s>]/i.test(t);
 let pasteSeq = 0;
-function addPastedHtml(text, via) {
-  const docs = splitSlides(text);
-  if (!docs.length) return false;
+
+// title of a slide doc (for the detected-slides list): <title>, else first <h1>, else "Slide N"
+function slideTitleOf(html, i) {
+  const t = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (t && t[1].trim()) return t[1].replace(/<[^>]+>/g, "").trim().slice(0, 60);
+  const h = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  if (h && h[1].trim()) return h[1].replace(/<[^>]+>/g, "").trim().slice(0, 60);
+  return `Slide ${i + 1}`;
+}
+
+// reflect current editor content everywhere: count, detected-slides list, button state
+function refreshEditor(val) {
+  const docs = val.trim() ? splitSlides(val) : [];
+  const n = docs.length;
+  const label = n ? `${n} slide${n > 1 ? "s" : ""} detected` : "no slides yet";
+  ["pasteCount", "pasteCountBig"].forEach((id) => {
+    const el = $(id); if (!el) return;
+    el.textContent = label;
+    el.classList.toggle("has", n > 0);
+  });
+  ["addPaste", "addPasteBig"].forEach((id) => { const b = $(id); if (b) b.disabled = n === 0; });
+  const rows = docs.map((d, i) =>
+    `<li><span class="idx">${String(i + 1).padStart(2, "0")}</span><span class="ttl">${slideTitleOf(d, i).replace(/</g, "&lt;")}</span></li>`).join("");
+  ["slidelist", "slidelistBig"].forEach((id) => { const ul = $(id); if (ul) ul.innerHTML = rows; });
+}
+// keep the two textareas in sync
+function setEditor(val, from) {
+  if (from !== "small") pasteEl.value = val;
+  if (from !== "big") pasteBig.value = val;
+  refreshEditor(val);
+}
+pasteEl.addEventListener("input", () => setEditor(pasteEl.value, "small"));
+pasteBig.addEventListener("input", () => setEditor(pasteBig.value, "big"));
+
+function addFromEditor() {
+  const content = pasteEl.value.trim();
+  if (!content) return;
+  const docs = splitSlides(content);
   pasteSeq++;
   items.push({ name: `pasted-${pasteSeq}.html`, content: docs.join("\n\n"), badge: docs.length + " ▦" });
   renderFiles();
-  toast(`Added ${docs.length} slide${docs.length > 1 ? "s" : ""} to the tray${via ? " — paste again for the next one" : ""}`, true);
-  return true;
+  setEditor("", null); // clear now that they're safely in the tray
+  toast(`Added ${docs.length} slide${docs.length > 1 ? "s" : ""} to the tray`, true);
 }
-const looksLikeSlideHtml = (t) => !!t && /<!DOCTYPE html>|<html[\s>]|slide-container|<body[\s>]|<div[\s>]/i.test(t);
+$("addPaste").addEventListener("click", addFromEditor);
+$("addPasteBig").addEventListener("click", () => { addFromEditor(); closeEditor(); });
+$("clearPaste").addEventListener("click", () => { setEditor("", null); pasteEl.focus(); });
+$("clearPasteBig").addEventListener("click", () => { setEditor("", null); pasteBig.focus(); });
 
-// pasting INTO the box adds to the tray immediately — no extra click per slide
-pasteEl.addEventListener("paste", (e) => {
-  const text = (e.clipboardData || window.clipboardData).getData("text");
-  if (!looksLikeSlideHtml(text)) return; // plain text: let it type normally
-  e.preventDefault();
-  addPastedHtml(text, true);
-  pasteEl.value = "";
-  refreshPasteCount();
-});
-// paste ANYWHERE on the page (Ctrl+V) — no need to focus the box first
+/* fullscreen editor modal */
+function openEditor() {
+  pasteBig.value = pasteEl.value;
+  refreshEditor(pasteBig.value);
+  $("editorModal").classList.add("on");
+  $("editorModal").setAttribute("aria-hidden", "false");
+  setTimeout(() => pasteBig.focus(), 30);
+}
+function closeEditor() {
+  $("editorModal").classList.remove("on");
+  $("editorModal").setAttribute("aria-hidden", "true");
+}
+$("expandPaste").addEventListener("click", openEditor);
+$("closeEditor").addEventListener("click", closeEditor);
+$("editorModal").addEventListener("click", (e) => { if (e.target === $("editorModal")) closeEditor(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("editorModal").classList.contains("on")) closeEditor(); });
+
+// paste ANYWHERE on the page drops the HTML into the editor (visible + editable) and
+// switches to the Paste tab — it does NOT silently add, so you always see it first.
 window.addEventListener("paste", (e) => {
   const tgt = e.target;
-  if (tgt === pasteEl || /^(INPUT|TEXTAREA)$/.test(tgt && tgt.tagName)) return; // handled above / user typing
+  if (tgt === pasteEl || tgt === pasteBig || /^(INPUT|TEXTAREA)$/.test(tgt && tgt.tagName)) return;
   const text = (e.clipboardData || window.clipboardData).getData("text");
   if (!looksLikeSlideHtml(text)) return;
   e.preventDefault();
-  addPastedHtml(text, true);
+  pickTab("paste");
+  const joined = pasteEl.value.trim() ? pasteEl.value.replace(/\s*$/, "") + "\n\n" + text : text;
+  setEditor(joined, null);
+  pasteEl.focus();
+  toast("Pasted into the editor — review, then Add to tray", true);
 });
-// manual button stays as a fallback for hand-typed content
-$("addPaste").addEventListener("click", () => {
-  const content = pasteEl.value.trim();
-  if (!content) return;
-  addPastedHtml(content, false);
-  pasteEl.value = "";
-  refreshPasteCount();
-});
+refreshEditor("");
 
 /* ---------- tray actions ---------- */
 $("files").addEventListener("click", (e) => {
@@ -406,7 +465,9 @@ function showResults(data) {
   const pdfUrl = data.download.replace("/download/", "/download-pdf/");
   $("dlwrap").innerHTML =
     `<a href="${data.download}" download><button class="btn dl pptx">⤓ PPTX</button></a>` +
-    `<a href="${pdfUrl}" download><button class="btn dl pdf">⤓ PDF</button></a>`;
+    // PDF export needs PowerPoint — only offer it where that's available
+    (caps.features && caps.features.pdfExport
+      ? `<a href="${pdfUrl}" download><button class="btn dl pdf">⤓ PDF</button></a>` : "");
 
   const grid = $("grid");
   grid.innerHTML = "";

@@ -105,27 +105,54 @@ def main():
     comps.sort(reverse=True)
     comps = comps[:48]
 
-    # Text EMBEDDED in a large art region (chart axis labels, diagram annotations) must
-    # stay baked into the crop — replacing it visibly would deface the art. Standalone
-    # text is inpainted out of the crops so it can be visibly replaced without doubling.
+    # How each detected text line is handled:
+    #  - EMBEDDED in a large art region (chart axis labels, diagram annotations) -> stay
+    #    baked into the crop (replacing them visibly would deface the art); invisible
+    #    editable overlay on top.  EXCEPTION: a line the caller marked "safe" (uniform
+    #    sampled background + confident OCR) is replaceable even inside a big art comp —
+    #    e.g. a name plate under a photo: inpainting restores the clean plate and the name
+    #    becomes a real visible editable text box instead of uneditable baked pixels.
+    #  - LARGE display titles -> OCR mis-segments big stylized (often serif, letter-spaced)
+    #    type and inpaint can't cleanly erase large strokes, so a visible replace both
+    #    mangles the words AND leaves ghost smears. Keep the ORIGINAL title pixels as a
+    #    dedicated crop (looks perfect) + an invisible editable overlay.
+    #  - everything else (body text) -> inpainted out and visibly replaced (editable).
     big_area = 0.02 * W * H
     pad = int(0.025 * W)  # axis labels / annotations hug the chart just outside its bbox
     bigs = [(x - pad, y - pad, w + 2 * pad, h + 2 * pad) for (a, x, y, w, h) in comps if w * h > big_area]
+    LARGE_H = 0.045 * H   # a line this tall in image space reads as a display title
     embedded = []
     inpaint_mask = text_mask.copy()
+    title_crops = []      # (x0,y0,x1,y1) of large titles to preserve as pixel crops
     for ti, t in enumerate(text_boxes):
         tx0, ty0 = t["x"] * scale, t["y"] * scale
         tx1, ty1 = tx0 + t["w"] * scale, ty0 + t["h"] * scale
-        ta = max((tx1 - tx0) * (ty1 - ty0), 1)
+        th = ty1 - ty0
+        ta = max((tx1 - tx0) * th, 1)
+        x0i, y0i = max(0, int(tx0) - 2), max(0, int(ty0) - 2)
+        x1i, y1i = min(W, int(tx1) + 2), min(H, int(ty1) + 2)
+        # embedded in a big art comp?
+        emb = False
         for (bx, by, bw, bh) in bigs:
             ox = max(0, min(tx1, bx + bw) - max(tx0, bx))
             oy = max(0, min(ty1, by + bh) - max(ty0, by))
             if ox * oy / ta >= 0.6:
-                embedded.append(ti)
-                x0i, y0i = max(0, int(tx0) - 2), max(0, int(ty0) - 2)
-                x1i, y1i = min(W, int(tx1) + 2), min(H, int(ty1) + 2)
-                inpaint_mask[y0i:y1i, x0i:x1i] = 0  # keep these pixels in the crop
+                emb = True
                 break
+        if emb and not t.get("safe"):
+            embedded.append(ti)
+            inpaint_mask[y0i:y1i, x0i:x1i] = 0          # keep baked in the crop
+            continue
+        # large display titles are baked ALWAYS (even on a "safe" uniform background): the
+        # problem isn't the background, it's that OCR mis-reads big stylized type ("When"
+        # -> "Wh") and inpaint smears large strokes, so any visible replace looks worse
+        # than the untouched original pixels.
+        if th >= LARGE_H:
+            embedded.append(ti)                          # invisible editable overlay
+            inpaint_mask[y0i:y1i, x0i:x1i] = 0          # keep original title pixels
+            title_crops.append((x0i, y0i, x1i, y1i))     # ...as a dedicated crop
+            continue
+        # else: stays in inpaint_mask -> wiped from crops, visibly replaced by emit
 
     clean = bgr
     if inpaint_mask.any():
@@ -141,6 +168,19 @@ def main():
         images.append({
             "x": round(px0 / scale, 1), "y": round(py0 / scale, 1),
             "w": round((px1 - px0) / scale, 1), "h": round((py1 - py0) / scale, 1),
+            "path": os.path.abspath(p),
+        })
+
+    # pixel-perfect crops of large display titles (drawn above rects, below invisible text)
+    for ci, (x0i, y0i, x1i, y1i) in enumerate(title_crops):
+        if x1i - x0i < 2 or y1i - y0i < 2:
+            continue
+        crop = clean[y0i:y1i, x0i:x1i]
+        p = os.path.join(crop_dir, "tt-%03d.png" % ci)
+        cv2.imwrite(p, crop)
+        images.append({
+            "x": round(x0i / scale, 1), "y": round(y0i / scale, 1),
+            "w": round((x1i - x0i) / scale, 1), "h": round((y1i - y0i) / scale, 1),
             "path": os.path.abspath(p),
         })
 

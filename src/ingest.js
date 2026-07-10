@@ -164,9 +164,17 @@ async function closeOcr() {
 // Returns { bg, rects:[{x,y,w,h,color,radius}], images:[{x,y,w,h,path}] } or null.
 async function decomposeImage(imgPath, cropDir, scale, items) {
   try {
+    // `safe` = this line can be VISIBLY replaced (uniform sampled background + confident
+    // text — the exact gate emit uses for visibility). The decomposer uses it to inpaint
+    // such text OUT of art crops instead of baking it in as uneditable pixels (e.g. a
+    // name plate under a photo: the plate stays in the picture, the name becomes a real
+    // editable text box on top).
     const out = await runPyInput(
       [path.join(ROOT, "scripts", "decompose.py"), imgPath, cropDir, String(scale)],
-      JSON.stringify((items || []).map((it) => ({ x: it.x, y: it.y, w: it.w, h: it.h }))));
+      JSON.stringify((items || []).map((it) => ({
+        x: it.x, y: it.y, w: it.w, h: it.h,
+        safe: it.bg && (it.conf == null || it.conf >= 65) ? 1 : 0,
+      }))));
     const start = out.indexOf('{"bg"');
     return JSON.parse(start >= 0 ? out.slice(start) : out.trim());
   } catch (e) {
@@ -232,6 +240,10 @@ async function ingestImage(imgPath, workDir) {
 // Makes a deck of non-editable slide images (e.g. a Canva/Gamma export) editable, and
 // doubles as a PPTX->PDF path via the download-pdf endpoint.
 async function ingestPptx(pptxPath, workDir) {
+  // PPTX input renders each slide with PowerPoint (COM), which is Windows + Office only.
+  if (require("os").platform() !== "win32") {
+    throw new Error("PPTX input needs PowerPoint (Windows only) — unavailable on this host. Use HTML, PDF, or image inputs here.");
+  }
   const base = path.basename(pptxPath).replace(/\.pptx?$/i, "");
   const outDir = path.join(workDir, "pptx-" + base.replace(/\W+/g, "_"));
   fs.mkdirSync(outDir, { recursive: true });
